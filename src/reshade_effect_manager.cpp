@@ -17,7 +17,7 @@
 
 #include <stb_image.h>
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include <stb_image_resize.h>
+#include <stb_image_resize2.h>
 
 #include <mutex>
 
@@ -1121,7 +1121,7 @@ bool ReshadeEffectPipeline::init(CVulkanDevice *device, const ReshadeEffectKey &
                 if (w != (int)texture->width() || h != (int)texture->height())
                 {
                     resized_data.resize(texture->width() * texture->height() * 4);
-                    stbir_resize_uint8(data, w, h, 0, resized_data.data(), texture->width(), texture->height(), 0, STBI_rgb_alpha);
+                    stbir_resize_uint8_linear(data, w, h, 0, resized_data.data(), texture->width(), texture->height(), 0, STBIR_4CHANNEL);
 
                     w = texture->width();
                     h = texture->height();

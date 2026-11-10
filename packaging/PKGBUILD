@@ -1,7 +1,7 @@
 # Maintained Gamescope source and Thor HDR profile, based on OGC 3.17.0-ogc1.
 pkgname=thorch-gamescope
 pkgver=3.17.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Gamescope with calibrated upper-screen HDR for AYN Thor'
 arch=(aarch64)
 url='https://github.com/lurenjiamax/gamescope'
