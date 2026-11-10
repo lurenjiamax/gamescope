@@ -51,10 +51,16 @@ dep_x11 = dependency('x11')
 dep_wayland = dependency('wayland-client')
 vulkan_dep = dependency('vulkan')
 
-glm_proj = subproject('glm')
-glm_dep = glm_proj.get_variable('glm_dep')
-stb_proj = subproject('stb')
-stb_dep = stb_proj.get_variable('stb_dep')
+glm_dep = dependency('glm', version: '>= 1.0.1')
+stb_dep = declare_dependency(
+  include_directories: include_directories(
+    get_option('prefix') / get_option('includedir') / 'stb',
+    is_system: true,
+  ),
+)
+if not cppc.has_header('stb_image.h', dependencies: stb_dep)
+  error('Install the system stb headers before configuring Gamescope')
+endif
 
 if get_option('enable_openvr_support')
   openvr_dep = dependency('openvr', version: '>= 2.7', required : false)

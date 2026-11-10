@@ -1,7 +1,7 @@
 # Maintained Gamescope source and Thor HDR profile, based on OGC 3.17.0-ogc1.
 pkgname=thorch-gamescope
 pkgver=3.17.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Gamescope with calibrated upper-screen HDR for AYN Thor'
 arch=(aarch64)
 url='https://github.com/lurenjiamax/gamescope'
@@ -11,7 +11,7 @@ depends=(glibc libstdc++ libgcc lcms2 libavif libcap libdecor libdrm libei libin
          libxfixes libxkbcommon libxmu libxrender libxres libxtst libxxf86vm
          luajit pixman sdl2 seatd systemd-libs vulkan-icd-loader wayland
          xcb-util-errors xcb-util-wm xorg-server-xwayland)
-makedepends=(benchmark cmake git glslang meson ninja vulkan-headers wayland-protocols)
+makedepends=(benchmark cmake git glm glslang meson ninja stb vulkan-headers wayland-protocols)
 optdepends=('thorch-gaming-installers: Steam ARM64 launcher for the HDR login session')
 provides=("gamescope=${pkgver}")
 conflicts=(gamescope)
@@ -21,7 +21,8 @@ _source="${THORCH_GAMESCOPE_SOURCE_DIR:-${startdir}/../../sources/gamescope}"
 
 build() {
   arch-meson "$_source" build \
-    -Dforce_fallback_for=glm,stb,libdisplay-info,libliftoff,vkroots,wlroots \
+    -Dforce_fallback_for=libdisplay-info,libliftoff,vkroots,wlroots \
+    --wrap-mode=nodownload \
     -Denable_tests=false -Denable_openvr_support=false -Dpipewire=enabled
   meson compile -C build
 }
