@@ -1,0 +1,35 @@
+# Maintained Gamescope source and Thor HDR profile, based on OGC 3.17.0-ogc1.
+pkgname=thorch-gamescope
+pkgver=3.17.0
+pkgrel=1
+pkgdesc='Gamescope with calibrated upper-screen HDR for AYN Thor'
+arch=(aarch64)
+url='https://github.com/lurenjiamax/gamescope'
+license=(BSD-2-Clause BSD-3-Clause LicenseRef-Reshade)
+depends=(glibc libstdc++ libgcc lcms2 libavif libcap libdecor libdrm libei libinput
+         libpipewire libx11 libxcb libxcomposite libxcursor libxdamage libxext
+         libxfixes libxkbcommon libxmu libxrender libxres libxtst libxxf86vm
+         luajit pixman sdl2 seatd systemd-libs vulkan-icd-loader wayland
+         xcb-util-errors xcb-util-wm xorg-server-xwayland)
+makedepends=(benchmark cmake git glslang meson ninja vulkan-headers wayland-protocols)
+optdepends=('thorch-gaming-installers: Steam ARM64 launcher for the HDR login session')
+provides=("gamescope=${pkgver}")
+conflicts=(gamescope)
+replaces=(gamescope)
+options=(lto)
+_source="${THORCH_GAMESCOPE_SOURCE_DIR:-${startdir}/../../sources/gamescope}"
+
+build() {
+  arch-meson "$_source" build \
+    -Dforce_fallback_for=glm,stb,libdisplay-info,libliftoff,vkroots,wlroots \
+    -Denable_tests=false -Denable_openvr_support=false -Dpipewire=enabled
+  meson compile -C build
+}
+
+package() {
+  DESTDIR="$pkgdir" meson install -C build --skip-subprojects --no-rebuild
+  install -Dm644 "$_source/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm755 "$_source/packaging/thorch-hdr-session" "$pkgdir/usr/bin/thorch-hdr-session"
+  install -Dm644 "$_source/packaging/ayn-thor.conf" "$pkgdir/usr/share/thorch/hdr/ayn-thor.conf"
+  install -Dm644 "$_source/packaging/thorch-hdr.desktop" "$pkgdir/usr/share/wayland-sessions/thorch-hdr.desktop"
+}

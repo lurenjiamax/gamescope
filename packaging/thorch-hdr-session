@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config="${THORCH_HDR_CONFIG:-/usr/share/thorch/hdr/ayn-thor.conf}"
+if ! tr '\0' '\n' < /sys/firmware/devicetree/base/compatible | grep -qx 'ayn,thor'; then
+    echo 'The calibrated HDR session requires an AYN Thor.' >&2
+    exit 1
+fi
+if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]; then
+    echo 'Select Thorch HDR from the login screen, or launch from an unused TTY.' >&2
+    exit 1
+fi
+source "$config"
+export GAMESCOPE_INTERNAL_DEVICE_ID THORCH_STEAM_MODE
+export THORCH_STEAM_USE_GAMESCOPE=0
+export ENABLE_GAMESCOPE_WSI=1
+if (( $# == 0 )); then
+    set -- thorch-start-steam-arm64
+fi
+exec gamescope --backend drm --prefer-output "$THORCH_HDR_CONNECTOR" \
+    --hdr-enabled --hdr-sdr-content-nits "$THORCH_HDR_SDR_NITS" \
+    -W "$THORCH_HDR_WIDTH" -H "$THORCH_HDR_HEIGHT" \
+    -r "$THORCH_HDR_REFRESH" --xwayland-count 2 -f -e -- "$@"

@@ -32,6 +32,7 @@
 
 #include "backend.h"
 #include "color_helpers.h"
+#include "DRMComposition.h"
 #include "Utils/Defer.h"
 #include "Utils/Parsers.h"
 #include "Utils/String.h"
@@ -417,6 +418,7 @@ namespace gamescope
 		const displaycolorimetry_t& GetDisplayColorimetry() const { return m_Mutable.DisplayColorimetry; }
 
 		std::span<const uint8_t> GetRawEDID() const override { return std::span<const uint8_t>{ m_Mutable.EdidData.begin(), m_Mutable.EdidData.end() }; }
+		bool HasPhysicalEdid() const { return m_Mutable.bHasPhysicalEdid; }
 		bool HandleEdidChange()
 		{
 			bool bChanged = m_Mutable.bEdidChanged;
@@ -549,7 +551,8 @@ namespace gamescope
 			const char *pszMake = ""; // Not owned, no free. This is a pointer to pnp db or szMakePNP.
 			DRMModeGenerator fnDynamicModeGenerator;
 			std::vector<uint32_t> ValidDynamicRefreshRates{};
-			std::vector<uint8_t> EdidData; // Raw, unmodified.
+			std::vector<uint8_t> EdidData; // Physical or synthetic; never committed to KMS.
+			bool bHasPhysicalEdid = false;
 			std::vector<BackendMode> BackendModes;
 			
 			displaycolorimetry_t DisplayColorimetry = displaycolorimetry_709;
@@ -3048,20 +3051,54 @@ namespace gamescope
 
 	void CDRMConnector::ParseEDID()
 	{
-		if ( !GetProperties().EDID )
-			return;
+		if ( GetProperties().EDID )
+		{
+			const uint64_t ulBlobId = GetProperties().EDID->GetCurrentValue();
+			if ( ulBlobId )
+			{
+				drmModePropertyBlobRes *pBlob = drmModeGetPropertyBlob( g_DRM.fd, ulBlobId );
+				if ( pBlob )
+				{
+					defer( drmModeFreePropertyBlob( pBlob ) );
+					const uint8_t *pDataPointer = reinterpret_cast<const uint8_t *>( pBlob->data );
+					m_Mutable.EdidData = std::vector<uint8_t>{ pDataPointer, pDataPointer + pBlob->length };
+					m_Mutable.bHasPhysicalEdid = true;
+				}
+			}
+		}
 
-		uint64_t ulBlobId = GetProperties().EDID->GetCurrentValue();
-		if ( !ulBlobId )
-			return;
+		if ( m_Mutable.EdidData.empty() && GetScreenType() == GAMESCOPE_SCREEN_TYPE_INTERNAL )
+		{
+			const drmModeModeInfo *pPreferredMode = find_mode( m_pConnector.get(), 0, 0, 0 );
+			if ( pPreferredMode && !( pPreferredMode->flags & DRM_MODE_FLAG_INTERLACE ) )
+			{
+				m_Mutable.bHasPhysicalEdid = false;
+				m_Mutable.EdidData = GenerateSimpleEdid( EdidModeInfo
+				{
+					.clockKHz = static_cast<uint32_t>( pPreferredMode->clock ),
+					.hdisplay = pPreferredMode->hdisplay,
+					.hsyncStart = pPreferredMode->hsync_start,
+					.hsyncEnd = pPreferredMode->hsync_end,
+					.htotal = pPreferredMode->htotal,
+					.vdisplay = pPreferredMode->vdisplay,
+					.vsyncStart = pPreferredMode->vsync_start,
+					.vsyncEnd = pPreferredMode->vsync_end,
+					.vtotal = pPreferredMode->vtotal,
+					.physicalWidthMm = m_pConnector->mmWidth > 0 ? static_cast<uint32_t>( m_pConnector->mmWidth ) : 0,
+					.physicalHeightMm = m_pConnector->mmHeight > 0 ? static_cast<uint32_t>( m_pConnector->mmHeight ) : 0,
+					.hsyncPositive = !!( pPreferredMode->flags & DRM_MODE_FLAG_PHSYNC ),
+					.vsyncPositive = !!( pPreferredMode->flags & DRM_MODE_FLAG_PVSYNC ),
+				} );
+				if ( !m_Mutable.EdidData.empty() )
+				{
+					drm_log.infof( "Generated synthetic EDID for EDID-less internal connector %s from mode %s",
+						m_Mutable.szName, pPreferredMode->name );
+				}
+			}
+		}
 
-		drmModePropertyBlobRes *pBlob = drmModeGetPropertyBlob( g_DRM.fd, ulBlobId );
-		if ( !pBlob )
+		if ( m_Mutable.EdidData.empty() )
 			return;
-		defer( drmModeFreePropertyBlob( pBlob ) );
-
-		const uint8_t *pDataPointer = reinterpret_cast<const uint8_t *>( pBlob->data );
-		m_Mutable.EdidData = std::vector<uint8_t>{ pDataPointer, pDataPointer + pBlob->length };
 
 		di_info *pInfo = di_info_parse_edid( m_Mutable.EdidData.data(), m_Mutable.EdidData.size() );
 		if ( !pInfo )
@@ -3114,7 +3151,19 @@ namespace gamescope
 		{
 			CScriptScopedLock script;
 
-			auto oKnownDisplay = script.Manager().Gamescope().Config.LookupDisplay( script, m_Mutable.szMakePNP, pProduct->product, m_Mutable.szModel, m_Mutable.szDataString );
+			const bool bInternal = GetScreenType() == GAMESCOPE_SCREEN_TYPE_INTERNAL;
+			const char *pszDeviceId = bInternal ? getenv( "GAMESCOPE_INTERNAL_DEVICE_ID" ) : nullptr;
+			auto oKnownDisplay = script.Manager().Gamescope().Config.LookupDisplay( script, GamescopeDisplayLookupInfo
+			{
+				.vendor = m_Mutable.szMakePNP,
+				.product = pProduct->product,
+				.model = m_Mutable.szModel,
+				.dataString = m_Mutable.szDataString,
+				.connector = m_Mutable.szName,
+				.deviceId = pszDeviceId ? pszDeviceId : "",
+				.internal = bInternal,
+				.hasEdid = m_Mutable.bHasPhysicalEdid,
+			} );
 			if ( oKnownDisplay )
 			{
 				sol::table tTable = oKnownDisplay->second;
@@ -3213,9 +3262,11 @@ namespace gamescope
 					bHasKnownHDRInfo = true;
 				}
 			}
-			else
+			if ( m_Mutable.ValidDynamicRefreshRates.empty() )
 			{
-				// Unknown display, see if there are any other refresh rates in the EDID we can get.
+				// No display-specific rates (unknown display, or a known profile
+				// without a dynamic modegen); collect the connector's own
+				// refresh rates so the kernel mode list stays usable.
 				if ( GetScreenType() == GAMESCOPE_SCREEN_TYPE_INTERNAL || cv_drm_allow_dynamic_modes_for_external_display )
 				{
 					const drmModeModeInfo *pPreferredMode = find_mode( m_pConnector.get(), 0, 0, 0 );
@@ -4460,9 +4511,15 @@ namespace gamescope
 			if ( g_bOutputHDREnabled )
 			{
 				bNeedsFullComposite |= g_bHDRItmEnable;
-				if ( !SupportsColorManagement() )
+				const bool bSupportsHardwareColorManagement = SupportsColorManagement();
+				bNeedsFullComposite |= DrmHdrOutputRequiresVulkanComposition(
+					g_bOutputHDREnabled,
+					bSupportsHardwareColorManagement,
+					pFrameInfo->outputEncodingEOTF,
+					pFrameInfo->layers.count(),
+					pFrameInfo->layers.get( 0 ).colorspace == GAMESCOPE_APP_TEXTURE_COLORSPACE_HDR10_PQ );
+				if ( !bSupportsHardwareColorManagement )
 				{
-					bNeedsFullComposite |= ( pFrameInfo->layers.count() > 1 || pFrameInfo->layers.get( 0 ).colorspace != GAMESCOPE_APP_TEXTURE_COLORSPACE_HDR10_PQ );
 					// Scanout can't apply the LUT-baked backlight dim here.
 					bNeedsFullComposite |= g_ColorMgmt.current.flBacklightLutGain != 1.0f;
 				}

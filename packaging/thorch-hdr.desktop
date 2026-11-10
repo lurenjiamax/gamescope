@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Thorch HDR (upper screen)
+Comment=Steam HDR using the Thor upper-panel color profile
+Exec=/usr/bin/thorch-hdr-session
+TryExec=/usr/bin/thorch-hdr-session
+Type=Application

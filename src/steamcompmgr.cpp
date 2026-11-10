@@ -30,6 +30,7 @@
  */
 
 #include "backend.h"
+#include "HDRGamma22.h"
 #include "gamescope_shared.h"
 #include "xwayland_ctx.hpp"
 #include <X11/X.h>
@@ -164,6 +165,7 @@ static lut3d_t g_tmpLut3d;
 extern int g_nDynamicRefreshHz;
 
 bool g_bForceHDRSupportDebug = false;
+extern bool g_bAppWantsHDRCached;
 extern float g_flInternalDisplayBrightnessNits;
 extern float g_flHDRItmSdrNits;
 extern float g_flHDRItmTargetNits;
@@ -332,7 +334,10 @@ static const gamescope_color_mgmt_t k_ScreenshotColorMgmtHDR =
 // sudo cpupower frequency-set --governor performance
 
 static void
-create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_color_mgmt_luts outColorMgmtLuts[ EOTF_Count ])
+create_color_mgmt_luts(
+	const gamescope_color_mgmt_t& newColorMgmt,
+	gamescope_color_mgmt_luts outColorMgmtLuts[ EOTF_Count ],
+	bool bScaleSDRWhite )
 {
 	const displaycolorimetry_t& displayColorimetry = newColorMgmt.displayColorimetry;
 	const displaycolorimetry_t& outputEncodingColorimetry = newColorMgmt.outputEncodingColorimetry;
@@ -370,6 +375,11 @@ create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_col
 				if ( newColorMgmt.outputEncodingEOTF == EOTF_Gamma22 )
 				{
 					// G22 -> G22. Does not matter what the g22 mult is
+					flGain *= gamescope::Gamma22HdrSDRInputScale(
+						bScaleSDRWhite,
+						newColorMgmt.outputEncodingEOTF,
+						newColorMgmt.flSDROnHDRBrightness,
+						newColorMgmt.flInternalDisplayBrightness );
 					tonemapping.g22_luminance = 1.f;
 					// xwm_log.infof("G22 -> G22");
 				}
@@ -597,8 +607,15 @@ static CBacklightWatcher g_BacklightWatcher;
 static void
 update_color_mgmt()
 {
+	static bool s_bCurrentScaleSDRWhite = false;
+
 	if ( !GetBackend()->GetCurrentConnector() )
 		return;
+
+	const bool bScaleSDRWhite = gamescope::ShouldScaleGamma22SDRWhite(
+		g_bOutputHDREnabled,
+		g_bAppWantsHDRCached,
+		GetBackend()->GetCurrentConnector()->GetHDRInfo().IsHDRG22() );
 
 	GetBackend()->GetCurrentConnector()->GetNativeColorimetry(
 		g_bOutputHDREnabled,
@@ -617,7 +634,11 @@ update_color_mgmt()
 	struct timespec t0, t1;
 #else
 	// check if any part of our color mgmt stack is dirty
-	if ( g_ColorMgmt.pending == g_ColorMgmt.current && g_ColorMgmt.serial != 0 )
+	if ( gamescope::ColorMgmtLutsAreCurrent(
+		g_ColorMgmt.pending == g_ColorMgmt.current,
+		g_ColorMgmt.serial != 0,
+		s_bCurrentScaleSDRWhite,
+		bScaleSDRWhite ) )
 		return;
 #endif
 
@@ -627,7 +648,7 @@ update_color_mgmt()
 
 	if (g_ColorMgmt.pending.enabled)
 	{
-		create_color_mgmt_luts(g_ColorMgmt.pending, g_ColorMgmtLuts);
+		create_color_mgmt_luts(g_ColorMgmt.pending, g_ColorMgmtLuts, bScaleSDRWhite);
 	}
 	else
 	{
@@ -661,13 +682,14 @@ update_color_mgmt()
 
 	g_ColorMgmt.serial = ++s_NextColorMgmtSerial;
 	g_ColorMgmt.current = g_ColorMgmt.pending;
+	s_bCurrentScaleSDRWhite = bScaleSDRWhite;
 }
 
 static void
 update_screenshot_color_mgmt()
 {
-	create_color_mgmt_luts(k_ScreenshotColorMgmt, g_ScreenshotColorMgmtLuts);
-	create_color_mgmt_luts(k_ScreenshotColorMgmtHDR, g_ScreenshotColorMgmtLutsHDR);
+	create_color_mgmt_luts(k_ScreenshotColorMgmt, g_ScreenshotColorMgmtLuts, false);
+	create_color_mgmt_luts(k_ScreenshotColorMgmtHDR, g_ScreenshotColorMgmtLutsHDR, false);
 }
 
 bool set_color_sdr_gamut_wideness( float flVal )
@@ -2018,20 +2040,30 @@ MouseCursor::MouseCursor(xwayland_ctx_t *ctx)
 
 void MouseCursor::UpdatePosition()
 {
+	Window root_ret, child_ret;
+	int root_x = m_x, root_y = m_y, win_x = 0, win_y = 0;
+	unsigned int mask;
+	XQueryPointer( m_ctx->dpy, DefaultRootWindow( m_ctx->dpy ),
+	               &root_ret, &child_ret,
+	               &root_x, &root_y,
+	               &win_x, &win_y,
+	               &mask );
+
 	wlserver_lock();
-	struct wlr_pointer_constraint_v1 *pConstraint = wlserver.GetCursorConstraint();
-	m_bConstrained = !!pConstraint;
-	if ( pConstraint && pConstraint->current.cursor_hint.enabled )
-	{
-		m_x = pConstraint->current.cursor_hint.x;
-		m_y = pConstraint->current.cursor_hint.y;
-	}
-	else
-	{
-		m_x = wlserver.mouse_surface_cursorx;
-		m_y = wlserver.mouse_surface_cursory;
-	}
+	m_bConstrained = !!wlserver.GetCursorConstraint();
 	wlserver_unlock();
+
+	if ( root_x != m_x || root_y != m_y )
+	{
+		m_x = root_x;
+		m_y = root_y;
+		if ( !m_imageEmpty )
+		{
+			wlserver.ulLastMovedCursorTime = get_time_in_nanos();
+			wlserver.bCursorHidden = !wlserver.bCursorHasImage;
+			hasRepaintNonBasePlane = true;
+		}
+	}
 }
 
 void MouseCursor::checkSuspension()
